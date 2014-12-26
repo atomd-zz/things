@@ -16,6 +16,7 @@ import akka.persistence.journal.leveldb.SharedLeveldbJournal
 import akka.persistence.journal.leveldb.SharedLeveldbStore
 import akka.remote.testkit.MultiNodeConfig
 import akka.remote.testkit.MultiNodeSpec
+import akka.stream.actor.ActorPublisher
 import akka.stream.actor.ActorSubscriber
 import akka.stream.actor.ActorSubscriberMessage.OnNext
 import akka.stream.actor.WatermarkRequestStrategy
@@ -86,7 +87,6 @@ object ThingClusterSpecConfig extends MultiNodeConfig {
         akka.remote.netty.tcp.port = 2701
         akka.contrib.cluster.sharding.role = "db"
         akka.cluster.roles = ["db", "topic"]
-        akka.log-config-on-start = on
       """)
   }
 
@@ -260,6 +260,10 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
         Topic.startSharding(system, None)
         Thing.startSharding(system, Some(ThingExtension(system).thingProps))
       }
+      // with roles: client
+      runOn(client1, client2) {
+        // pass
+      }
 
       runOn(topic1, topic2, db1, db2, client1, client2) {
         awaitAssert {
@@ -274,106 +278,59 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
       }
     }
 
+    "verify cluster sevices" in within(30.seconds) {
+      runOn(topic1, topic2) {
+        val topicAggregatorProxy = Topic(system).topicAggregatorProxy
+        val queue = system.actorOf(Queue.props())
+        topicAggregatorProxy ! Subscribe(Topic.EMPTY, queue)
+        expectMsgType[SubscribeAck]
+      }
 
+      runOn(db1, db2) {
+        val thingRegion = Thing.shardRegion(system)
+        thingRegion ! AskStatus("0")
+        expectMsgType[Status]
+      }
+      enterBarrier("verified-cluster-services")
+    }
 
-//      // with roles: db, topic
-//      runOn(db1, db2) {
-//        // if it starts as the first node, should also start topicAggregator's single manager
-//        Topic.startTopicAggregator(system, role = Some("topic"))
-//
-//        Topic.startSharding(system, None)
-//        Thing.startSharding(system, Some(ThingExtension(system).thingProps))
-//      }
-//
-//      // with roles: topic, session
-//      runOn(topic1, topic2) {
-//        // should start the proxy too, since topics should report to topicAggregator via this proxy
-//        Topic.startTopicAggregator(system, role = Some("topic"))
-//        Topic.startTopicAggregatorProxy(system, role = Some("topic"))
-//
-//        Topic.startSharding(system, Some(ThingExtension(system).topicProps))
-//        // if it starts as the first node, should also start ConnectionSession's coordinate
-//        Thing.startSharding(system, None)
-//      }
-//
-//      // with roles: client
-//      runOn(client1, client2) {
-//        // pass
-//      }
-//
-//      runOn(topic1, topic2, db1, db2, client1, client2) {
-//        awaitAssert {
-//          self ! cluster.state.members.filter(_.status == MemberStatus.Up).size
-//          expectMsg(7)
-//        }
-//        enterBarrier("start-cluster")
-//      }
-//
-//      runOn(controller) {
-//        enterBarrier("start-cluster")
-//      }
-//    }
-//
-//    "verify cluster sevices" in within(30.seconds) {
-//      runOn(topic1, topic2) {
-//        val topicAggregatorProxy = Topic(system).topicAggregatorProxy
-//        val queue = system.actorOf(Queue.props())
-//        topicAggregatorProxy ! Subscribe(Topic.EMPTY, queue)
-//        expectMsgType[SubscribeAck]
-//
-//        val serviceA = system.actorOf(Props[Service], "serviceA")
-//        ClusterReceptionistExtension(system).registerService(serviceA)
-//      }
-//
-//      runOn(db1, db2) {
-//        val thingRegion = Thing.shardRegion(system)
-//        thingRegion ! AskStatus("0")
-//        expectMsgType[Status]
-//
-//        val serviceA = system.actorOf(Props[Service], "serviceA")
-//        ClusterReceptionistExtension(system).registerService(serviceA)
-//      }
-//      enterBarrier("verified-cluster-services")
-//    }
-//
-//    "start client sevices" in within(60.seconds) {
-//      runOn(client1) {
-//
-////        val thingExt = ThingExtension(system)
-////        val topicAggregatorClient = Topic(system).topicAggregatorClient
-////
-////        val topicsQueue = system.actorOf(Queue.props())
-////        val topicsReceiver = system.actorOf(Props(new TopicAggregatorReceiver(self)))
-////        ActorPublisher(topicsQueue).subscribe(ActorSubscriber(topicsReceiver))
-////        topicAggregatorClient ! Subscribe(Topic.EMPTY, topicsQueue)
-////        expectMsgType[SubscribeAck]
-////
-////        val queue = system.actorOf(Queue.props())
-////        val receiver = system.actorOf(Props(new Receiver(self)))
-////        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
-////        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group1"), queue)
-////        expectMsgAllClassOf(classOf[Aggregator.Available], classOf[SubscribeAck])
-////
-////        topicAggregatorClient ! Aggregator.AskStats
-////        expectMsgPF(5.seconds) {
-////          case Aggregator.Stats(xs) if xs.values.toList.contains(Topic.EMPTY) =>
-////            log.info("aggregator topics: {}", xs); assert(true)
-////          case x => log.error("Wrong aggregator topics: {}", x); assert(false)
-////        }
-//      }
-//
-//      runOn(client2) {
-////        val thingExt = ThingExtension(system)
-////        val queue = system.actorOf(Queue.props())
-////        val receiver = system.actorOf(Props(new Receiver(self)))
-////        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
-////
-////        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group2"), queue)
-////        expectMsgType[SubscribeAck]
-////
-////        //queueOfBusiness3 = queue
-//      }
-//      enterBarrier("started-client-business")
-//    }
+    "start client sevices" in within(60.seconds) {
+      runOn(client1) {
+        val thingExt = ThingExtension(system)
+        val topicAggregatorClient = Topic(system).topicAggregatorClient
+
+        val topicsQueue = system.actorOf(Queue.props())
+        val topicsReceiver = system.actorOf(Props(new TopicAggregatorReceiver(self)))
+        ActorPublisher(topicsQueue).subscribe(ActorSubscriber(topicsReceiver))
+        topicAggregatorClient ! Subscribe(Topic.EMPTY, topicsQueue)
+        expectMsgType[SubscribeAck]
+
+        val queue = system.actorOf(Queue.props())
+        val receiver = system.actorOf(Props(new Receiver(self)))
+        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
+        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group1"), queue)
+        expectMsgAllClassOf(classOf[Aggregator.Available], classOf[SubscribeAck])
+
+        topicAggregatorClient ! Aggregator.AskStats
+        expectMsgPF(5.seconds) {
+          case Aggregator.Stats(xs) if xs.values.toList.contains(Topic.EMPTY) =>
+            log.info("aggregator topics: {}", xs); assert(true)
+          case x => log.error("Wrong aggregator topics: {}", x); assert(false)
+        }
+      }
+
+      runOn(client2) {
+        val thingExt = ThingExtension(system)
+        val queue = system.actorOf(Queue.props())
+        val receiver = system.actorOf(Props(new Receiver(self)))
+        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
+
+        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group2"), queue)
+        expectMsgType[SubscribeAck]
+
+        //queueOfBusiness3 = queue
+      }
+      enterBarrier("started-client-business")
+    }
   }
 }
