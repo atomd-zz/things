@@ -25,6 +25,7 @@ object Topic {
   val EMPTY = "TOPIC-EMPTY"
   val GLOBAL = "TOPIC-GLOBAL"
   val shardName: String = "Topics"
+
   val idExtractor: ShardRegion.IdExtractor = {
     case x: Subscribe => (x.topic, x)
     case x: Unsubscribe => (x.topic, x)

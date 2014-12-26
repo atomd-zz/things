@@ -43,9 +43,9 @@ object ClusterServer extends App {
     case "monitor" :: tail =>
       var extraCfg =
         s"""
-        |akka.cluster.roles = ["db", "topic", "monitor"]
-        |akka.extensions = ["akka.contrib.pattern.ClusterReceptionistExtension"]
-        |""".stripMargin
+        akka.cluster.roles = ["db", "topic", "monitor"]
+        akka.extensions = ["akka.contrib.pattern.ClusterReceptionistExtension"]
+        """.stripMargin
       if (tail != Nil) {
         val contacts = tail.map { address => s""""akka.tcp://ThingSystem@${address}"""" }.mkString("\n")
         extraCfg += s"cluster.seed-nodes = [\n$contacts\n]".stripMargin

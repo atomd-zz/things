@@ -1,5 +1,4 @@
-package me.atomd.things.demo
-
+//package me.atomd.things.demo
 //
 //import akka.actor.Actor
 //import akka.actor.ActorLogging
@@ -9,6 +8,7 @@ package me.atomd.things.demo
 //import akka.actor.Props
 //import akka.contrib.pattern.ClusterClient
 //import akka.pattern.ask
+//
 //import com.typesafe.config.ConfigFactory
 //import java.io.BufferedWriter
 //import java.io.FileNotFoundException

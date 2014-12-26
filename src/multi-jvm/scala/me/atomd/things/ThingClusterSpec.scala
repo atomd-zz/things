@@ -6,7 +6,6 @@ import java.util.UUID
 import akka.actor._
 import akka.cluster.Cluster
 import akka.cluster.MemberStatus
-import akka.contrib.pattern.ClusterClient
 import akka.contrib.pattern.ClusterReceptionistExtension
 import akka.contrib.pattern.ClusterSharding
 import akka.contrib.pattern.DistributedPubSubMediator.Subscribe
@@ -17,23 +16,16 @@ import akka.persistence.journal.leveldb.SharedLeveldbJournal
 import akka.persistence.journal.leveldb.SharedLeveldbStore
 import akka.remote.testkit.MultiNodeConfig
 import akka.remote.testkit.MultiNodeSpec
-import akka.stream.actor.ActorPublisher
 import akka.stream.actor.ActorSubscriber
 import akka.stream.actor.ActorSubscriberMessage.OnNext
 import akka.stream.actor.WatermarkRequestStrategy
 import akka.testkit.ImplicitSender
 import akka.util.Timeout
 import com.typesafe.config.ConfigFactory
-import me.atomd.things.ThingClusterSpec.TopicAggregatorReceiver
-import me.atomd.things.db.AskStatus
-import me.atomd.things.db.Status
-import me.atomd.things.db.Thing
-import me.atomd.things.mq.Aggregator
-import me.atomd.things.mq.Queue
-import me.atomd.things.mq.Topic
+import me.atomd.things.db._
+import me.atomd.things.mq._
 import org.iq80.leveldb.util.FileUtils
 
-import scala.concurrent.Await
 import scala.concurrent.duration._
 
 object ThingClusterSpecConfig extends MultiNodeConfig {
@@ -54,19 +46,20 @@ object ThingClusterSpecConfig extends MultiNodeConfig {
   commonConfig(ConfigFactory.parseString(
     """
       akka.loglevel = INFO
+      akka.contrib.cluster.sharding.guardian-name = guardian
       akka.actor.provider = "akka.cluster.ClusterActorRefProvider"
       akka.extensions = ["akka.contrib.pattern.ClusterReceptionistExtension"]
       akka.persistence.journal.plugin = "akka.persistence.journal.leveldb-shared"
       akka.persistence.journal.leveldb-shared.store {
         native = off
-        dir = "target/test-shared-journal"
+       dir = "target/test-shared-journal"
       }
       akka.persistence.snapshot-store.local.dir = "target/test-snapshots"
-      things.mode = "cluster"
       akka.cluster.seed-nodes = [
         "akka.tcp://ThingClusterSpec@localhost:2601",
         "akka.tcp://ThingClusterSpec@localhost:2701"
       ]
+      things.mode = "cluster"
     """))
 
   nodeConfig(topic1) {
@@ -83,7 +76,7 @@ object ThingClusterSpecConfig extends MultiNodeConfig {
       """
         akka.remote.netty.tcp.port = 2602
         akka.contrib.cluster.sharding.role = "topic"
-        akka.cluster.roles = ["topic"]
+        akka.cluster.roles = ["topic", "db"]
       """)
   }
 
@@ -93,6 +86,7 @@ object ThingClusterSpecConfig extends MultiNodeConfig {
         akka.remote.netty.tcp.port = 2701
         akka.contrib.cluster.sharding.role = "db"
         akka.cluster.roles = ["db", "topic"]
+        akka.log-config-on-start = on
       """)
   }
 
@@ -110,6 +104,7 @@ object ThingClusterSpecConfig extends MultiNodeConfig {
   nodeConfig(client1, client2) {
     ConfigFactory.parseString(
       """
+        akka.remote.netty.tcp.port = 0
         akka.cluster.roles =["client"]
         things {
             client.initial-contacts-points = [
@@ -132,8 +127,6 @@ class ThingClusterSpecMultiJvmNode7 extends ThingClusterSpec
 object ThingClusterSpec {
 
   class Service extends Actor with ActorLogging {
-
-    import context.dispatcher
     def receive = running
 
     val running: Receive = {
@@ -150,7 +143,6 @@ object ThingClusterSpec {
 
     import context.dispatcher
     import me.atomd.things.ThingClusterSpec.ThingClient._
-    import me.atomd.things.db._
 
     val tickTask = context.system.scheduler.schedule(3.seconds, 3.seconds, self, Tick)
     val thingRegion = ClusterSharding(context.system).shardRegion(Thing.shardName)
@@ -161,9 +153,7 @@ object ThingClusterSpec {
       tickTask.cancel()
     }
 
-    def receive = running
-
-    val running: Receive = {
+    def receive: Receive = {
       case Tick =>
         val key = UUID.randomUUID().toString
         val value = UUID.randomUUID().toString
@@ -200,8 +190,8 @@ object ThingClusterSpec {
 
 class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMultiNodeSpec with ImplicitSender {
 
-  import ThingClusterSpecConfig._
   import ThingClusterSpec._
+  import ThingClusterSpecConfig._
 
   def initialParticipants = roles.size
 
@@ -225,9 +215,10 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
 
   "Sharded Things Cluster" must {
 
-    "setup shared journal" in {
+    "Setup Shared Journal" in {
       // start the Persistence extension
       Persistence(system)
+
       runOn(controller) {
         ClusterMonitor.startMonitor(system)
         system.actorOf(Props[SharedLeveldbStore], "store")
@@ -242,7 +233,7 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
       enterBarrier("setup-persistence")
     }
 
-    "start cluster" in within(30.seconds) {
+    "Start Cluster" in within(30.seconds) {
       val cluster = Cluster(system)
 
       runOn(db1) { cluster join node(controller).address }
@@ -252,16 +243,6 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
       runOn(client1) { cluster join node(controller).address }
       runOn(client2) { cluster join node(controller).address }
 
-      // with roles: db, topic
-      runOn(db1, db2) {
-        // if it starts as the first node, should also start topicAggregator's single manager
-        Topic.startTopicAggregator(system, role = Some("topic"))
-
-        Topic.startSharding(system, None)
-        Thing.startSharding(system, Some(ThingExtension(system).thingProps))
-      }
-
-      // with roles: topic, session
       runOn(topic1, topic2) {
         // should start the proxy too, since topics should report to topicAggregator via this proxy
         Topic.startTopicAggregator(system, role = Some("topic"))
@@ -272,9 +253,12 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
         Thing.startSharding(system, None)
       }
 
-      // with roles: client
-      runOn(client1, client2) {
-        // pass
+      runOn(db1, db2) {
+        // if it starts as the first node, should also start topicAggregator's single manager
+        Topic.startTopicAggregator(system, role = Some("topic"))
+
+        Topic.startSharding(system, None)
+        Thing.startSharding(system, Some(ThingExtension(system).thingProps))
       }
 
       runOn(topic1, topic2, db1, db2, client1, client2) {
@@ -290,67 +274,106 @@ class ThingClusterSpec extends MultiNodeSpec(ThingClusterSpecConfig) with STMult
       }
     }
 
-    "verify cluster sevices" in within(30.seconds) {
-      runOn(topic1, topic2) {
-        def topicAggregatorProxy = Topic(system).topicAggregatorProxy
-        val queue = system.actorOf(Queue.props())
-        topicAggregatorProxy ! Subscribe(Topic.EMPTY, queue)
-        expectMsgType[SubscribeAck]
 
-        val serviceA = system.actorOf(Props[Service], "serviceA")
-        ClusterReceptionistExtension(system).registerService(serviceA)
-      }
 
-      runOn(db1, db2) {
-        def thingRegion = Thing.shardRegion(system)
-        log.info("thingRegion: {}", thingRegion)
-        thingRegion ! AskStatus("0")
-        expectMsgType[Status]
-
-        val serviceA = system.actorOf(Props[Service], "serviceA")
-        ClusterReceptionistExtension(system).registerService(serviceA)
-      }
-      enterBarrier("verified-cluster-services")
-    }
-
-    "start client sevices" in within(60.seconds) {
-      runOn(client1) {
-
-        val thingExt = ThingExtension(system)
-        val topicAggregatorClient = Topic(system).topicAggregatorClient
-
-        val topicsQueue = system.actorOf(Queue.props())
-        val topicsReceiver = system.actorOf(Props(new TopicAggregatorReceiver(self)))
-        ActorPublisher(topicsQueue).subscribe(ActorSubscriber(topicsReceiver))
-        topicAggregatorClient ! Subscribe(Topic.EMPTY, topicsQueue)
-        expectMsgType[SubscribeAck]
-
-        val queue = system.actorOf(Queue.props())
-        val receiver = system.actorOf(Props(new Receiver(self)))
-        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
-        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group1"), queue)
-        expectMsgAllClassOf(classOf[Aggregator.Available], classOf[SubscribeAck])
-
-        topicAggregatorClient ! Aggregator.AskStats
-        expectMsgPF(5.seconds) {
-          case Aggregator.Stats(xs) if xs.values.toList.contains(Topic.EMPTY) =>
-            log.info("aggregator topics: {}", xs); assert(true)
-          case x => log.error("Wrong aggregator topics: {}", x); assert(false)
-        }
-      }
-
-      runOn(client2) {
-        val thingExt = ThingExtension(system)
-        val queue = system.actorOf(Queue.props())
-        val receiver = system.actorOf(Props(new Receiver(self)))
-        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
-
-        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group2"), queue)
-        expectMsgType[SubscribeAck]
-
-        //queueOfBusiness3 = queue
-      }
-      enterBarrier("started-client-business")
-    }
+//      // with roles: db, topic
+//      runOn(db1, db2) {
+//        // if it starts as the first node, should also start topicAggregator's single manager
+//        Topic.startTopicAggregator(system, role = Some("topic"))
+//
+//        Topic.startSharding(system, None)
+//        Thing.startSharding(system, Some(ThingExtension(system).thingProps))
+//      }
+//
+//      // with roles: topic, session
+//      runOn(topic1, topic2) {
+//        // should start the proxy too, since topics should report to topicAggregator via this proxy
+//        Topic.startTopicAggregator(system, role = Some("topic"))
+//        Topic.startTopicAggregatorProxy(system, role = Some("topic"))
+//
+//        Topic.startSharding(system, Some(ThingExtension(system).topicProps))
+//        // if it starts as the first node, should also start ConnectionSession's coordinate
+//        Thing.startSharding(system, None)
+//      }
+//
+//      // with roles: client
+//      runOn(client1, client2) {
+//        // pass
+//      }
+//
+//      runOn(topic1, topic2, db1, db2, client1, client2) {
+//        awaitAssert {
+//          self ! cluster.state.members.filter(_.status == MemberStatus.Up).size
+//          expectMsg(7)
+//        }
+//        enterBarrier("start-cluster")
+//      }
+//
+//      runOn(controller) {
+//        enterBarrier("start-cluster")
+//      }
+//    }
+//
+//    "verify cluster sevices" in within(30.seconds) {
+//      runOn(topic1, topic2) {
+//        val topicAggregatorProxy = Topic(system).topicAggregatorProxy
+//        val queue = system.actorOf(Queue.props())
+//        topicAggregatorProxy ! Subscribe(Topic.EMPTY, queue)
+//        expectMsgType[SubscribeAck]
+//
+//        val serviceA = system.actorOf(Props[Service], "serviceA")
+//        ClusterReceptionistExtension(system).registerService(serviceA)
+//      }
+//
+//      runOn(db1, db2) {
+//        val thingRegion = Thing.shardRegion(system)
+//        thingRegion ! AskStatus("0")
+//        expectMsgType[Status]
+//
+//        val serviceA = system.actorOf(Props[Service], "serviceA")
+//        ClusterReceptionistExtension(system).registerService(serviceA)
+//      }
+//      enterBarrier("verified-cluster-services")
+//    }
+//
+//    "start client sevices" in within(60.seconds) {
+//      runOn(client1) {
+//
+////        val thingExt = ThingExtension(system)
+////        val topicAggregatorClient = Topic(system).topicAggregatorClient
+////
+////        val topicsQueue = system.actorOf(Queue.props())
+////        val topicsReceiver = system.actorOf(Props(new TopicAggregatorReceiver(self)))
+////        ActorPublisher(topicsQueue).subscribe(ActorSubscriber(topicsReceiver))
+////        topicAggregatorClient ! Subscribe(Topic.EMPTY, topicsQueue)
+////        expectMsgType[SubscribeAck]
+////
+////        val queue = system.actorOf(Queue.props())
+////        val receiver = system.actorOf(Props(new Receiver(self)))
+////        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
+////        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group1"), queue)
+////        expectMsgAllClassOf(classOf[Aggregator.Available], classOf[SubscribeAck])
+////
+////        topicAggregatorClient ! Aggregator.AskStats
+////        expectMsgPF(5.seconds) {
+////          case Aggregator.Stats(xs) if xs.values.toList.contains(Topic.EMPTY) =>
+////            log.info("aggregator topics: {}", xs); assert(true)
+////          case x => log.error("Wrong aggregator topics: {}", x); assert(false)
+////        }
+//      }
+//
+//      runOn(client2) {
+////        val thingExt = ThingExtension(system)
+////        val queue = system.actorOf(Queue.props())
+////        val receiver = system.actorOf(Props(new Receiver(self)))
+////        ActorPublisher(queue).subscribe(ActorSubscriber(receiver))
+////
+////        thingExt.topicClient ! Subscribe(Topic.EMPTY, Some("group2"), queue)
+////        expectMsgType[SubscribeAck]
+////
+////        //queueOfBusiness3 = queue
+//      }
+//      enterBarrier("started-client-business")
+//    }
   }
 }

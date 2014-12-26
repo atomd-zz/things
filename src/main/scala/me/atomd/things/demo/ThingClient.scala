@@ -50,6 +50,7 @@ object ThingClient extends App {
     s"""
           things.client.initial-contacts-points = [\n$contacts\n]
           akka.remote.netty.tcp.port=0
+          akka.remote.netty.tcp.host="127.0.0.1"
         """
   val config = ConfigFactory.parseString(extraCfg).withFallback(ConfigFactory.load("client"))
   val system = thingSystem(config)
