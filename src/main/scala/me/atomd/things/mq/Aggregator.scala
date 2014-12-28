@@ -125,8 +125,7 @@ class Aggregator(
 
     if (failureDetector.isMonitoring(from)) {
       log.info("Received reporting data from [{}]", from)
-    }
-    else {
+    } else {
       log.info("Received first reporting data from [{}]", from)
     }
 
@@ -189,5 +188,4 @@ object Helpers {
     private def getDuration(path: String, unit: TimeUnit): FiniteDuration =
       Duration(config.getDuration(path, unit), unit)
   }
-
 }

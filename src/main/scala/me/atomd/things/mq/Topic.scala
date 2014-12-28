@@ -68,7 +68,6 @@ object Topic {
     } else {
       s"/user/$shardName"
     }
-
   }
 
   def startTopicAggregator(system: ActorSystem, role: Option[String]) {
@@ -117,7 +116,7 @@ object Topic {
 
   class ClusterClientBroker(servicePath: String, originalClient: ActorRef) extends Actor with ActorLogging {
     def receive = {
-      case x => originalClient forward ClusterClient.Send(servicePath, x, localAffinity = false)
+      case x => originalClient forward ClusterClient.Send(servicePath, x, localAffinity = true)
     }
   }
 
@@ -133,8 +132,7 @@ class Topic(groupRoutingLogic: RoutingLogic) extends Publishable with Actor with
   val groupRouter = Router(groupRoutingLogic)
   val reportingTask = if (isAggregator) {
     None
-  }
-  else {
+  } else {
     topicAggregator ! ReportingData(topic)
     val settings = new Aggregator.Settings(context.system)
     Some(context.system.scheduler.schedule(settings.AggregatorReportingInterval, settings.AggregatorReportingInterval, self, ReportingTick))
