@@ -22,6 +22,7 @@ val project = Project(
       "org.scalatest" %% "scalatest" % "2.1.3" % "test",
       "commons-io" % "commons-io" % "2.4" % "test",
       "com.github.krasserm" %% "akka-persistence-cassandra" % "0.3.5",
+      "org.apache.commons" % "commons-math3" % "3.2",
       // Runtime
       "ch.qos.logback" % "logback-classic" % "1.0.13",
       "com.typesafe.akka" %% "akka-slf4j" % akkaVersion

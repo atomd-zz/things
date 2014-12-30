@@ -48,10 +48,10 @@ object ThingClient extends App {
   val contacts = arglist.map { address => s""""akka.tcp://ThingSystem@${address}/user/receptionist"""" }.mkString("\n")
   val extraCfg =
     s"""
-          things.client.initial-contacts-points = [\n$contacts\n]
-          akka.remote.netty.tcp.port=0
-          akka.remote.netty.tcp.host="127.0.0.1"
-        """
+    |things.client.initial-contacts-points = [\n$contacts\n]
+    |akka.remote.netty.tcp.port=0
+    |akka.remote.netty.tcp.host="127.0.0.1"
+    |"""
   val config = ConfigFactory.parseString(extraCfg).withFallback(ConfigFactory.load("client"))
   val system = thingSystem(config)
   val thingExt = ThingExtension(system)
